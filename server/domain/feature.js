@@ -30,7 +30,7 @@ module.exports = {
     },
 
     updateFeatureDescription: function (applicationName, featureName, value, req, cb) {
-      feature().updateFeatureDescription(applicationName, featureName, newFeatureDescription, req, cb);
+      feature().updateFeatureDescription(applicationName, featureName, value, req, cb);
     },
 
     addFeatureToggle: function (applicationName, featureName, toggleName, req, cb) {
