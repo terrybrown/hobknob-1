@@ -15,11 +15,8 @@ var getCategory = function (id, name, description, columns, features) {
     };
 };
 
-var simpleCategoryId = 0,
-    totalFeatureToggles = 0;
-
+var simpleCategoryId = 0;
 module.exports.simpleCategoryId = simpleCategoryId;
-module.exports.totalFeatureToggles = totalFeatureToggles;
 
 var getSimpleCategory = function (name, description) {
     return getCategory(0, name || 'Simple Features',
