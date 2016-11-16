@@ -15,27 +15,22 @@ var getUserDetails = function (req) {
 
 module.exports = {
     getFeatureCategories: function (applicationName, cb) {
+        Promise.all([
+            getTogglesWithValues('toggle:' + applicationName),
+            getDescriptionsMap('meta:' + applicationName)
+        ])
+        .then(function (applicationToggleData) {
+            getCategoriesWithFeatureValues(applicationToggleData[0], applicationToggleData[1])
+                .then(function(categories) {
 
-        var toggleValues = getTogglesWithValues('toggle:' + applicationName);
-        var toggleDescriptions = getTogglesDescriptions('meta:' + applicationName);
-
-        Promise.all([toggleValues, toggleDescriptions])
-            .then(function (toggleData) {
-
-                var descriptionsMap = getDescriptionsMap(toggleData[1]);
-
-                getCategoriesWithFeatureValues(toggleData[0], descriptionsMap)
-                    .then(function(categories) {
-
-                        cb(null, {
-                            categories: categories
-                        });
+                    cb(null, {
+                        categories: categories
                     });
-            });
+                });
+        });
     },
 
     addFeature: function (applicationName, featureName, featureDescription, categoryId, req, cb) {
-
         var metaData = {
             categoryId: categoryId,
             description: featureDescription
@@ -43,19 +38,14 @@ module.exports = {
 
         var isMulti = isMultiFeature(metaData);
 
-        if (isMulti) {
-            //todo
-        } else {
-            Promise.all([addSimpleFeature(applicationName, featureName, req),
-                         addSimpleFeatureMeta(applicationName, featureName, metaData)])
-                .then(function() {
-                    cb();
-                });
-        }
+        Promise.all([addFeatureToggle(applicationName, featureName, isMulti, req),
+                     addFeatureToggleMeta(applicationName, featureName, metaData)])
+            .then(function() {
+                cb();
+            });
     },
 
     getFeature: function (applicationName, featureName, cb) {
-
         var featureMetaPromise = getFeatureMeta(applicationName, featureName);
         var featureValuePromise = getFeatureValue(applicationName, featureName);
 
@@ -71,9 +61,10 @@ module.exports = {
                 var toggleSuggestions;
 
                 if (isMulti) {
-                    //todo
+                    toggles = JSON.parse(featureValue);
+                    toggleSuggestions = getToggleSuggestions(featureMeta, toggles);
                 } else {
-                    toggles = getSimpleFeatureToggle(featureName, featureValue.value);
+                    toggles = getSimpleFeatureToggle(featureName, featureValue);
                 }
 
                 cb(null, {
@@ -88,7 +79,6 @@ module.exports = {
     },
 
     deleteFeature: function (applicationName, featureName, req, cb) {
-
         deleteFeatureAndMetaData(applicationName, featureName)
             .then(function() {
                 hooks.run({
@@ -103,8 +93,9 @@ module.exports = {
     },
 
     updateFeatureToggle: function (applicationName, featureName, value, req, cb) {
+        var valueAsJson = JSON.stringify([ value.toString() ]);
 
-        redisClient.hset('toggle:' + applicationName + ':' + featureName, 'value', value, function(err) {
+        redisClient.set('toggle:' + applicationName + ':' + featureName, valueAsJson, function(err) {
             if (err) {
                 cb(err);
             }
@@ -123,7 +114,6 @@ module.exports = {
     },
 
     updateFeatureDescription: function (applicationName, featureName, newFeatureDescription, req, cb) {
-
         redisClient.hset('meta:' + applicationName + ':' + featureName, 'description', newFeatureDescription, function(err) {
             if (err) {
                 cb(err);
@@ -131,10 +121,65 @@ module.exports = {
 
             cb();
         });
+    },
+
+    addFeatureToggle: function  (applicationName, featureName, toggleName, req, cb) {
+        redisClient.get('toggle:' + applicationName + ':' + featureName, function(err, feature) {
+            var featureArray = JSON.parse(feature);
+            
+            var currentToggleNode = _.find(featureArray, function(node) {
+                return node.name === toggleName;
+            });
+
+            if (currentToggleNode) {
+
+            } else {
+                featureArray.push({ 'name': toggleName, 'value': false });
+
+                redisClient.set('toggle:' + applicationName + ':' + featureName, JSON.stringify(featureArray), function() {
+
+                    hooks.run({
+                      fn: 'addFeatureToggle',
+                      user: getUserDetails(req),
+                      applicationName: applicationName,
+                      featureName: featureName,
+                      toggleName: toggleName,
+                      value: false
+                    });
+
+                    cb();
+                });
+            }
+        });    
+    },
+
+    updateFeatureMultiToggle: function (applicationName, featureName, toggleName, value, req, cb) {
+        redisClient.get('toggle:' + applicationName + ':' + featureName, function(err, feature) {
+            var featureArray = JSON.parse(feature);
+
+            _.each(featureArray, function(node, index) {
+                if (node.name === toggleName) {
+                    featureArray[index].value = value;
+                }
+            });
+
+            redisClient.set('toggle:' + applicationName + ':' + featureName, JSON.stringify(featureArray), function() {
+                hooks.run({
+                  fn: 'updateFeatureToggle',
+                  user: getUserDetails(req),
+                  applicationName: applicationName,
+                  featureName: featureName,
+                  toggleName: toggleName,
+                  value: value
+                });
+
+                cb();
+            });
+        });
     }
 };
 
-function getDescriptionsMap (node) {
+function getDescriptionsMapObject (node) {
     var descriptions = _.map(node, function (descriptionNode) {
         return [getNodeName(descriptionNode.key), descriptionNode.value];
     });
@@ -148,19 +193,32 @@ var getNodeName = function (node) {
 };
 
 function getTogglesWithValues(keyName) {
-    return getHashDataForToggle(keyName, 'value');
+    return new Promise(function(resolve, reject) {
+        redisClient.keys(keyName + ':*', function(err, toggleKeys) {
+            if (toggleKeys.length === 0) {
+                resolve([]);
+            }
+
+            var results = [];
+
+            _.each(toggleKeys, function(toggleKey) {
+                redisClient.get(toggleKey, function (err, toggleData) {
+                    if (err) {
+                        reject(err);
+                    }
+
+                    results.push({ key: toggleKey, value: JSON.parse(toggleData) });
+
+                    if (toggleKeys.length === results.length) {
+                        resolve(results);
+                    }
+                });
+            });                     
+        });
+    });
 }
 
-function getTogglesDescriptions(keyName) {
-    return getHashDataForToggle(keyName, 'description');
-}
-
-function isMultiFeature (metaData) {
-    return  parseInt(metaData.categoryId) !== category.simpleCategoryId;
-};
-
-function getHashDataForToggle(keyName, valueName) {
-
+function getDescriptionsMap(keyName) {
     return new Promise(function(resolve, reject) {
         redisClient.keys(keyName + ':*', function(err, toggleKeys) {
             
@@ -173,12 +231,14 @@ function getHashDataForToggle(keyName, valueName) {
             _.each(toggleKeys, function(toggleKey) {
 
                 redisClient.hgetall(toggleKey, function (err, toggleData) {
-                    if (err) reject(err);
+                    if (err) {
+                        reject(err);
+                    }
 
-                    results.push({ key: toggleKey, value: toggleData[valueName] });
+                    results.push({ key: toggleKey, value: toggleData['description'] });
 
-                    if (toggleKeys.length === results.length) {
-                        resolve(results);
+                    if (toggleKeys.length === results.length) {                 
+                        resolve(getDescriptionsMapObject(results));
                     }
                 });
             });
@@ -186,29 +246,30 @@ function getHashDataForToggle(keyName, valueName) {
     });
 }
 
-function getCategoriesWithFeatureValues(applicationNode, descriptionsMap) {
+function isMultiFeature (metaData) {
+    return  parseInt(metaData.categoryId) !== category.simpleCategoryId;
+};
 
+function getCategoriesWithFeatureValues(applicationToggles, descriptionsMap) {
     return new Promise(function(resolve, reject) {
-
         var categories = category.getCategoriesFromConfig();
         var featureCount = 0;
 
-        if (applicationNode.length === 0) {
+        if (applicationToggles.length === 0) {
             return resolve(categories);
         }
 
-        _.each(applicationNode, function(featureNode) {
-            getFeature(featureNode, descriptionsMap)
+        _.each(applicationToggles, function(toggle) {
+            getFeature(toggle, descriptionsMap, categories)
                 .then(function(feature) {
-
+                    
                     if (feature) {
-
                         categories[feature.categoryId].features.push(feature);
 
                         featureCount += 1;
                     }
 
-                    if (featureCount === applicationNode.length) {
+                    if (featureCount === applicationToggles.length) {
                         return resolve(categories);
                     }
                 });
@@ -216,8 +277,7 @@ function getCategoriesWithFeatureValues(applicationNode, descriptionsMap) {
     });
 }
 
-function getFeature(node, descriptionMap) {
-
+function getFeature(node, descriptionMap, categories) {
     return new Promise(function(resolve, reject) {
         var name = getMetaName(node.key);
 
@@ -226,7 +286,7 @@ function getFeature(node, descriptionMap) {
         redisClient.hgetall(name, function(err, toggleMetaData) {
 
             if (isMultiFeature(toggleMetaData)) {
-                return resolve(getMultiFeature(name, node, metaData, categories, description));
+                return resolve(getMultiFeature(name, node, toggleMetaData, categories, description));
             }
 
             return resolve(getSimpleFeature(node, toggleMetaData));
@@ -240,8 +300,7 @@ function getMetaName(node) {
 }
 
 function getSimpleFeature(node, metaData) {
-
-    var value = node.value && node.value.toLowerCase() === 'true';
+    var value = node.value && node.value[0].toLowerCase() === 'true';
     return {
         name: getNodeName(node.key),
         description: metaData.description,
@@ -250,10 +309,17 @@ function getSimpleFeature(node, metaData) {
     };
 }
 
-function addSimpleFeature(applicationName, featureName, req) {
-
+function addFeatureToggle(applicationName, featureName, isMulti, req) {
     return new Promise(function(resolve, reject) {
-        redisClient.hmset('toggle:' + applicationName + ':' + featureName, { 'value': 'false' }, function(err) {
+        var valueAsJson;
+
+        if (isMulti) {
+            valueAsJson = JSON.stringify([]);
+        } else {
+            valueAsJson = JSON.stringify(['false']);
+        }
+
+        redisClient.set('toggle:' + applicationName + ':' + featureName, valueAsJson, function(err) {
             if (err) {
                 reject(err);
             }
@@ -272,7 +338,7 @@ function addSimpleFeature(applicationName, featureName, req) {
     });
 }
 
-function addSimpleFeatureMeta(applicationName, featureName, metaData) {
+function addFeatureToggleMeta(applicationName, featureName, metaData) {
     return new Promise(function(resolve, reject) {
         redisClient.hmset('meta:' + applicationName + ':' + featureName, metaData, function(err) {
             if (err) {
@@ -294,7 +360,7 @@ function getFeatureMeta(applicationName, featureName) {
 
 function getFeatureValue(applicationName, featureName) {
     return new Promise(function(resolve, reject) {
-        redisClient.hgetall('toggle:' + applicationName + ':' + featureName, function(err, value) {
+        redisClient.get('toggle:' + applicationName + ':' + featureName, function(err, value) {
             resolve(value);
         });
     });
@@ -303,7 +369,7 @@ function getFeatureValue(applicationName, featureName) {
 function getSimpleFeatureToggle(featureName, featureValue) {
     return [{
         name: featureName,
-        value: featureValue === 'true'
+        value: JSON.parse(featureValue)[0] === 'true'
     }];
 }
 
@@ -322,3 +388,27 @@ function deleteFeatureAndMetaData(applicationName, featureName) {
         });
     });
 }
+
+function getMultiFeature (name, node, metaData, categories, description) {
+    var foundCategory = categories[metaData.categoryId];
+    var values = _.map(foundCategory.columns, function (column) {
+        var columnNode = _.find(node.nodes, function (c) {
+            return c.key === node.key + '/' + column;
+        });
+        return columnNode && columnNode.value && columnNode.value.toLowerCase() === 'true';
+    });
+
+    return {
+        name: getNodeName(name),
+        description: description,
+        values: [values],
+        categoryId: metaData.categoryId
+    };
+}
+
+var getToggleSuggestions = function (metaData, toggles) {
+    var categories = category.getCategoriesFromConfig();
+    return _.difference(categories[metaData.categoryId].columns, _.map(toggles, function (toggle) {
+        return toggle.name;
+    }));
+};
