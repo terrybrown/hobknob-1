@@ -5,7 +5,8 @@ var feature = function() {
   switch (config.dataSource.toLowerCase()) {
     case 'etcd':
       return require('./etcd/feature');
-
+    case 'redis':
+      return require('./redis/feature');
     default:
       return null;
   }
@@ -29,7 +30,7 @@ module.exports = {
     },
 
     updateFeatureDescription: function (applicationName, featureName, value, req, cb) {
-      feature().updateFeatureDescription(applicationName, featureName, newFeatureDescription, req, cb);
+      feature().updateFeatureDescription(applicationName, featureName, value, req, cb);
     },
 
     addFeatureToggle: function (applicationName, featureName, toggleName, req, cb) {

@@ -1,8 +1,10 @@
 {
     "RequiresAuth": false,
     "dataSource": "etcd",
+    "redisHost": "127.0.0.1",
+    "redisPort": "6379",
     "etcdHost": "127.0.0.1",
-    "etcdPort": "4001",
+    "etcdPort": "2379",
     "hobknobHost": "localhost",
     "hobknobPort": "3006",
     "loadBalancerFile": "/etc/lbstatus/hobknob",
